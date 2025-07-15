@@ -1,82 +1,79 @@
+from datetime import datetime, timedelta
+
 import boto3
-import os
-import pandas as pd
+import polars as pl
 
-cnt=0
+cnt = 0
 
-s3_client = boto3.client('s3')
-
-
-srn_to_load='decrypted-sorted-srn'
+s3_client = boto3.client("s3")
 
 
-S3_BUCKET="s3://artemis-int-ingestion-files-af-south-1-992382549029"
-TARGET_PREFIX="workstage=landing-archive"
-SOURCE_PREFIX="workstage=landing"
-MAX_FILE_AGE_IN_DAYS="10"
+srn_to_load = "decrypted-sorted-srn"
+
+
+S3_BUCKET = "artemis-int-ingestion-files-af-south-1-992382549029"
+TARGET_PREFIX = "workstage=landing-archive"
+SOURCE_PREFIX = "workstage=landing"
+MAX_FILE_AGE_IN_DAYS = "10"
+
+TEST_BUCKET = "neil-992382549029"
+TEST_TARGET_PREFIX = "matt_archived"
+TEST_SOURCE_PREFIX = "matt_old"
+TEST_MAX_FILE_AGE_IN_MINS = 10
+
 
 def list_all_keys(bucket):
     keys = []
-    paginator = s3_client.get_paginator('list_objects_v2')
-    #pages = paginator.paginate(Bucket=bucket,Prefix=prefix,PaginationConfig={'MaxItems': 10})
-    pages = paginator.paginate(Bucket=bucket,Prefix=SOURCE_PREFIX)
+    paginator = s3_client.get_paginator("list_objects_v2")
+    # pages = paginator.paginate(Bucket=bucket,Prefix=prefix,PaginationConfig={'MaxItems': 10})
+    pages = paginator.paginate(Bucket=bucket, Prefix=TEST_SOURCE_PREFIX)
 
     for page in pages:
-        if 'Contents' in page:
-            for obj in page['Contents']:
-                #if any(srn in obj['Key'] for srn in srn_list):
-                keys.append(obj['Key'])
+        if "Contents" in page:
+            for obj in page["Contents"]:
+                if obj["Key"] != TEST_SOURCE_PREFIX + "/":
+                    keys.append(
+                        (obj["Key"], obj["LastModified"].strftime("%Y-%m-%dT%H:%M:%SZ"))
+                    )
 
     return keys
 
-print(list_all_keys(S3_BUCKET))
 
 # Fetch all object keys
-all_keys = list_all_keys(S3_BUCKET)
+all_keys = list_all_keys(TEST_BUCKET)
 
-df = pd.DataFrame(columns=["SRN", "A", "Evo", "Type", "Date","file_count", "file_seq","file_path"])
-print('all keys')
+df = pl.DataFrame(schema={"key_filename": pl.Utf8, "Date": pl.Utf8}, data=all_keys)
 
-for key in all_keys:
-    print(key)
-    filenamefull=os.path.basename(key)
-    filename = filenamefull.replace(".txt", "")
-    fields = filename.split("_")
-    fields.append(f"{bucket_name}/{key}")
+# Convert Date column from string to datetime
+df = df.with_columns(pl.col("Date").str.strptime(pl.Datetime, "%Y-%m-%dT%H:%M:%SZ"))
+
+df_archive = df.filter(
+    pl.col("Date") < datetime.now() - timedelta(minutes=TEST_MAX_FILE_AGE_IN_MINS)
+)
+
+if len(df_archive) == 0:
+    print("No files to archive")
+else:
+    print(f"Found {len(df_archive)} files to archive:")
+
+# Move files from source to target prefix
+for row in df_archive.iter_rows(named=True):
+    source_key = row["key_filename"]
+    key_filename = source_key.replace(f"{TEST_SOURCE_PREFIX}/", "")
+    target_key = f"{TEST_TARGET_PREFIX}/{key_filename}"
 
     try:
-        df.loc[cnt] = fields
-        cnt=cnt+1
-     
-    except:
-        #append filename to an array
-        failed_files.append(filename)
- 
-
-df['Date'] = pd.to_datetime(df['Date'], format='%Y%m%d', errors='coerce')  
-   
-  # Sort dataframe by Date and file_seq columns
-df_filtered = df[(df['Type'].isin(file_type_list)) & (df['Date'] >= date_process_from)]
-#df_filtered = df[df['SRN'].isin(['AB0103', 'TK0004', 'XB0177', 'IV0104', 'WS0106'])]
-df_sorted = df_filtered.sort_values(['Date', 'file_seq'])
-
-
-  # Loop through sorted dataframe and execute S3 copy operations
-for index, row in df_sorted.iterrows():
-    try:
-        source_key = row['file_path']#.replace(bucket_name,'')  
-        filename = os.path.basename(source_key)
-        date_str = row['Date'].strftime('%Y%m%d')
-        formatted_date = f"{date_str[:4]}-{date_str[4:6]}" if len(date_str) >= 8 else "unknown-date"
-        target_key = f"{sorted_prefix}/{row['SRN']}/{formatted_date}/{filename}"  # Create new key with SRN prefix
-        
-        # Execute S3 copy
+        # Copy object to target location
         s3_client.copy_object(
-            Bucket=bucket_name,
-            CopySource=source_key,
-            Key=target_key
+            Bucket=TEST_BUCKET,
+            CopySource={"Bucket": TEST_BUCKET, "Key": source_key},
+            Key=target_key,
         )
         print(f"Successfully copied {source_key} to {target_key}")
-        
+
+        # Delete original object (completing the "move")
+        s3_client.delete_object(Bucket=TEST_BUCKET, Key=source_key)
+        print(f"Successfully deleted {source_key}")
+
     except Exception as e:
-        print(f"Error copying file {row['file_path']}: {str(e)}")
+        print(f"Error moving file {source_key}: {str(e)}")
