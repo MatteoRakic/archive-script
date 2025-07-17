@@ -1,25 +1,31 @@
 import argparse
 import time
 from datetime import datetime, timedelta
+import logging
 
 import boto3
 import polars as pl
 
-from consts import (
-    MAX_FILE_AGE_IN_DAYS,
-    S3_BUCKET,
-    SOURCE_PREFIX,
-    TARGET_PREFIX,
-)
+# Defining const vars
+S3_BUCKET = "artemis-int-ingestion-files-af-south-1-992382549029"
+TARGET_PREFIX = "source=archive/source=evo/origin=sacrra/workstage=landing"
+SOURCE_PREFIX = "source=evo/origin=sacrra/workstage=landing"
+MAX_FILE_AGE_IN_DAYS = 10
 
-# from consts import (
-#     TEST_BUCKET,
-#     TEST_MAX_FILE_AGE_IN_MINS,
-#     TEST_SOURCE_PREFIX,
-#     TEST_TARGET_PREFIX,
-# )
-from logger import logger
+TEST_BUCKET = "neil-992382549029"
+TEST_TARGET_PREFIX = "source=archive/source=evo/origin=sacrra/matt_archived"
+TEST_SOURCE_PREFIX = "matt_old"
+TEST_MAX_FILE_AGE_IN_MINS = 1
 
+# Defining logging
+logging.basicConfig(level="INFO")
+
+logger = logging.getLogger("ARCHIVER")
+
+logging.getLogger("boto3").setLevel(logging.WARNING)
+logging.getLogger("botocore").setLevel(logging.WARNING)
+
+# Defining S3 client
 s3_client = boto3.client("s3")
 
 
